@@ -11,3 +11,6 @@ Task 2:
 For Task 2, click on the following link and press the play button on the webpage to start the simulation.
 
 Task 2 Simulation : https://editor.p5js.org/Shahzaib10/full/yTs2wNFUa
+
+
+Refer to the PDF file for more information
