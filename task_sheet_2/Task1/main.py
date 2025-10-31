@@ -8,5 +8,12 @@ def main():
     climber.run_iteration()
     print("Updated state: ", climber.current_state)
 
+
+    #For Visualization 
+    # climber = hill_climber("charles darwin was always seasick")
+    # climber.print_landscape_analysis(num_samples=5000)
+    # results = climber.analyze_fitness_landscape(num_samples=10000)
+    # print(results['statistics'])
+
 if __name__ == "__main__":
     main()
