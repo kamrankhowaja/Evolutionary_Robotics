@@ -4,6 +4,7 @@ import random
 from typing import List, Optional, Tuple, Dict, Set
 from pygame import Vector2
 import numpy as np
+import matplotlib.pyplot as plt
 
 
 class Wall:
@@ -95,7 +96,14 @@ class Ray:
 
 
 class Robot(pygame.sprite.Sprite):
-    """Robot with evolved linear reactive behavior"""
+    """Robot with evolved linear reactive behavior and FSM obstacle avoidance"""
+    
+    # FSM States
+    STATE_GENOME_CONTROL = "Genome Control"
+    STATE_FORWARD = "Forward"
+    STATE_ROTATING = "Rotating"
+    STATE_STEERING_LEFT = "Steering Left"
+    STATE_STEERING_RIGHT = "Steering Right"
     
     def __init__(self, pos: Vector2, walls: List[Wall], world_width: int, genome: np.ndarray):
         super().__init__()
@@ -112,6 +120,12 @@ class Robot(pygame.sprite.Sprite):
         self.v_left = 0.0
         self.v_right = 0.0
         self.max_speed = 3.0
+        self.rotation_speed = 0.05
+        self.speed = 2.0
+        
+        # FSM state
+        self.state = self.STATE_GENOME_CONTROL
+        self.rotation_dir = 0
         
         # Create base image
         self.base_image = pygame.Surface((self.length, self.width), pygame.SRCALPHA)
@@ -131,6 +145,9 @@ class Robot(pygame.sprite.Sprite):
             Ray(Vector2(half_length, 0), 0, max_ray_length),                            # center
             Ray(Vector2(half_length, half_width), math.radians(-25), max_ray_length),  # right
         ]
+        
+        # Safe distance threshold for FSM activation
+        self.safe_distance = 0.5 * self.rays[1].max_length
         
         # Grid tracking for fitness
         self.visited_cells: Set[Tuple[int, int]] = set()
@@ -162,17 +179,129 @@ class Robot(pygame.sprite.Sprite):
         self.v_left = np.clip(self.v_left, -self.max_speed * 0.5, self.max_speed)
         self.v_right = np.clip(self.v_right, -self.max_speed * 0.5, self.max_speed)
     
+    def update_fsm(self, dt: float):
+        """Obstacle-avoidance FSM that runs only when near walls. 
+        Outside obstacles we switch to Genome Control."""
+        # Measurements
+        left_len  = self.rays[0].current_length
+        mid_len   = self.rays[1].current_length
+        right_len = self.rays[2].current_length
+        max_len   = self.rays[1].max_length
+
+        # Are we near any obstacle?
+        near_obstacle = (
+            mid_len  < self.safe_distance or
+            left_len < self.safe_distance * 0.7 or
+            right_len < self.safe_distance * 0.7
+        )
+
+        # If path is clear, leave the FSM (if we were in it) and return to genome
+        if not near_obstacle:
+            self.state = self.STATE_GENOME_CONTROL
+            return
+
+        # If we were roaming by genome and now something is near, enter the FSM
+        if self.state == self.STATE_GENOME_CONTROL:
+            # Choose initial FSM state
+            if mid_len < self.safe_distance:
+                self.state = self.STATE_ROTATING
+                self.rotation_dir = 1 if left_len > right_len else -1
+            elif left_len < self.safe_distance * 0.7:
+                self.state = self.STATE_STEERING_RIGHT
+            elif right_len < self.safe_distance * 0.7:
+                self.state = self.STATE_STEERING_LEFT
+            else:
+                self.state = self.STATE_FORWARD
+
+        # --- FSM proper (your provided logic) ---
+        if self.state == self.STATE_FORWARD:
+            if mid_len < self.safe_distance:
+                self.state = self.STATE_ROTATING
+                self.rotation_dir = 1 if left_len > right_len else -1
+            elif left_len < self.safe_distance * 0.7:
+                self.state = self.STATE_STEERING_RIGHT
+            elif right_len < self.safe_distance * 0.7:
+                self.state = self.STATE_STEERING_LEFT
+
+        elif self.state == self.STATE_ROTATING:
+            self.heading += self.rotation_speed * self.rotation_dir * dt * 60
+            if mid_len > 0.7 * max_len and min(left_len, right_len) > self.safe_distance * 0.5:
+                self.state = self.STATE_FORWARD
+
+        elif self.state == self.STATE_STEERING_LEFT:
+            self.heading += self.rotation_speed * dt * 60
+            # Return to forward when clear OR if middle gets too close
+            if right_len > self.safe_distance or mid_len < self.safe_distance:
+                # If mid is too close, we’ll rotate on next loop; otherwise go forward
+                if mid_len < self.safe_distance:
+                    self.state = self.STATE_ROTATING
+                    self.rotation_dir = 1 if left_len > right_len else -1
+                else:
+                    self.state = self.STATE_FORWARD
+
+        elif self.state == self.STATE_STEERING_RIGHT:
+            self.heading -= self.rotation_speed * dt * 60
+            if left_len > self.safe_distance or mid_len < self.safe_distance:
+                if mid_len < self.safe_distance:
+                    self.state = self.STATE_ROTATING
+                    self.rotation_dir = 1 if left_len > right_len else -1
+                else:
+                    self.state = self.STATE_FORWARD
+
+        # --- FSM movement (only when inside the FSM) ---
+        half_robot_length = self.length / 2
+        can_move = self.state in [self.STATE_FORWARD, self.STATE_STEERING_LEFT, self.STATE_STEERING_RIGHT]
+        if can_move and mid_len > half_robot_length * 1.5:
+            # self.speed is in pixels/frame at 60 FPS
+            self.move_forward_if_clear(self.speed)
+
+    
+    # def update_motion_fsm(self, dt: float):
+    #     """Update motion using FSM (for obstacle avoidance)"""
+    #     # Get ray measurements
+    #     mid_len = self.rays[1].current_length
+    #     half_robot_length = self.length / 2
+        
+    #     # Movement during FSM states
+    #     can_move = self.state in [self.STATE_STEERING_LEFT, self.STATE_STEERING_RIGHT]
+        
+    #     if can_move and mid_len > half_robot_length * 1.5:
+    #         # Move forward with fixed speed during FSM
+    #         velocity = Vector2()
+    #         velocity.from_polar((2.0 * dt * 60, -math.degrees(self.heading)))
+    #         new_pos = self.pos + velocity
+            
+    #         if not self.check_collision(new_pos):
+    #             self.pos = new_pos
+    #             self.rect.center = self.pos
+                
+    #             # Record visited cell
+    #             cell_x = int(self.pos.x // self.cell_size)
+    #             cell_y = int(self.pos.y // self.cell_size)
+    #             self.visited_cells.add((cell_x, cell_y))
+    
     def check_collision(self, new_pos: Vector2) -> bool:
-        """Check if new position would collide with walls"""
-        # Check distance to all walls
+        """Return True if the robot at new_pos would collide with any wall."""
+        collision_radius = math.sqrt((self.length/2)**2 + (self.width/2)**2) * 0.8
         for wall in self.walls:
-            # Check if robot center is too close to wall segment
             dist = self.point_to_segment_distance(new_pos, wall.starting_pt, wall.ending_pt)
-            # Use half the robot's diagonal as collision radius
-            collision_radius = math.sqrt((self.length/2)**2 + (self.width/2)**2)
-            if dist < collision_radius * 0.8:
+            if dist < collision_radius:
                 return True
         return False
+
+    def move_forward_if_clear(self, pixels_per_frame: float) -> None:
+        """Move forward by pixels_per_frame if it won't collide; also mark visited cells."""
+        velocity = Vector2()
+        velocity.from_polar((pixels_per_frame, -math.degrees(self.heading)))
+        new_pos = self.pos + velocity
+        if not self.check_collision(new_pos):
+            self.pos = new_pos
+            self.rect.center = self.pos
+            cell_x = int(self.pos.x // self.cell_size)
+            cell_y = int(self.pos.y // self.cell_size)
+            self.visited_cells.add((cell_x, cell_y))
+
+    
     
     def point_to_segment_distance(self, point: Vector2, seg_a: Vector2, seg_b: Vector2) -> float:
         """Calculate minimum distance from point to line segment"""
@@ -189,64 +318,44 @@ class Robot(pygame.sprite.Sprite):
         
         return point.distance_to(projection)
     
-    def update_motion(self, dt: float):
-        """Update robot position based on differential drive model with collision avoidance"""
-        # Differential drive: average velocity and angular velocity
-        v_avg = (self.v_left + self.v_right) / 2.0
-        omega = (self.v_right - self.v_left) / self.width
-        
-        # Update heading
-        new_heading = self.heading + omega * dt * 60
-        
-        # Calculate new position
-        velocity = Vector2()
-        velocity.from_polar((v_avg * dt * 60, -math.degrees(new_heading)))
-        new_pos = self.pos + velocity
-        
-        # Only update if no collision detected
-        if not self.check_collision(new_pos):
-            self.heading = new_heading
-            self.pos = new_pos
-            self.rect.center = self.pos
-            
-            # Record visited cell
-            cell_x = int(self.pos.x // self.cell_size)
-            cell_y = int(self.pos.y // self.cell_size)
-            self.visited_cells.add((cell_x, cell_y))
-        else:
-            # Collision detected - stop and slightly back up
-            # Allow rotation but reduce forward velocity
-            self.heading = new_heading
-            backup_velocity = Vector2()
-            backup_velocity.from_polar((-0.5 * dt * 60, -math.degrees(self.heading)))
-            backup_pos = self.pos + backup_velocity
-            if not self.check_collision(backup_pos):
-                self.pos = backup_pos
+    def update(self, dt: float):
+        # Update sensors
+        for ray in self.rays:
+            ray.update(self.pos, self.heading, self.walls)
+
+        # Run avoidance FSM (may switch state in/out of Genome Control and may move robot)
+        self.update_fsm(dt)
+
+        # If not inside FSM (i.e., state == GENOME_CONTROL), use genome-controlled differential drive
+        if self.state == self.STATE_GENOME_CONTROL:
+            s_left, s_mid, s_right = self.get_sensor_readings()
+            self.compute_wheel_velocities(s_left, s_mid, s_right)
+
+            v_avg = (self.v_left + self.v_right) / 2.0
+            omega = (self.v_right - self.v_left) / self.width
+
+            new_heading = self.heading + omega * dt * 60
+            velocity = Vector2()
+            velocity.from_polar((v_avg * dt * 60, -math.degrees(new_heading)))
+            new_pos = self.pos + velocity
+
+            if not self.check_collision(new_pos):
+                self.heading = new_heading
+                self.pos = new_pos
                 self.rect.center = self.pos
-        
-        # Record trajectory
+                cell_x = int(self.pos.x // self.cell_size)
+                cell_y = int(self.pos.y // self.cell_size)
+                self.visited_cells.add((cell_x, cell_y))
+
+        # Trajectory
         self.frame_count += 1
         if self.frame_count % self.trajectory_interval == 0:
             self.trajectory.append(self.pos.copy())
-    
-    def update(self, dt: float):
-        """Main update loop"""
-        # Update all rays
-        for ray in self.rays:
-            ray.update(self.pos, self.heading, self.walls)
-        
-        # Get sensor readings
-        s_left, s_mid, s_right = self.get_sensor_readings()
-        
-        # Compute wheel velocities using genome
-        self.compute_wheel_velocities(s_left, s_mid, s_right)
-        
-        # Update motion
-        self.update_motion(dt)
-        
-        # Update visual rotation
+
+        # Visual rotation
         self.image = pygame.transform.rotate(self.base_image, math.degrees(self.heading))
         self.rect = self.image.get_rect(center=self.pos)
+
     
     def get_fitness(self) -> int:
         """Return number of unique cells visited"""
@@ -396,9 +505,13 @@ def evaluate_genome(genome: np.ndarray, width: int, height: int,
             fitness_text = font.render(f'Cells: {robot.get_fitness()}', True, (255, 255, 255))
             screen.blit(fitness_text, (10, 10))
             
+            # Display current state
+            state_text = font.render(f'State: {robot.state}', True, (255, 255, 255))
+            screen.blit(state_text, (10, 50))
+            
             # Display generation progress
-            progress_text = font.render(f'Frame: {frame}/{eval_time}', True, (255, 255, 255))
-            screen.blit(progress_text, (10, 50))
+            progress_text = font.render(f'Frame: {frame}/{eval_time}', True, (200, 200, 200))
+            screen.blit(progress_text, (10, 90))
             
             pygame.display.flip()
             clock.tick(60)
@@ -473,4 +586,61 @@ def visualize_evolved_behavior(genome: np.ndarray, width: int, height: int,
     fitness, robot = evaluate_genome(genome, width, height, walls, eval_time,
                                      start_pos, start_heading, visualize=True)
     print(f"Final fitness: {fitness}")
+    save_trajectory_png(robot, walls, WIDTH, HEIGHT, "./run_trajectory.png")
     return robot
+
+def save_trajectory_png(robot: "Robot",
+                        walls: List[Wall],
+                        width: int,
+                        height: int,
+                        out_path: str = "trajectory.png") -> None:
+    """
+    Save a 2D plot of the robot's trajectory and walls using matplotlib.
+    """
+    fig, ax = plt.subplots(figsize=(width/100, height/100), dpi=100)
+    ax.set_xlim(0, width)
+    ax.set_ylim(height, 0)  # invert Y to match pygame screen coords
+    ax.set_aspect('equal', adjustable='box')
+
+    # Draw walls
+    for w in walls:
+        ax.plot([w.starting_pt.x, w.ending_pt.x],
+                [w.starting_pt.y, w.ending_pt.y], linewidth=2)
+
+    # Draw trajectory
+    if len(robot.trajectory) > 1:
+        xs = [p.x for p in robot.trajectory]
+        ys = [p.y for p in robot.trajectory]
+        ax.plot(xs, ys, linewidth=2)
+
+    # Draw final robot position
+    ax.scatter([robot.pos.x], [robot.pos.y], s=40)
+
+    ax.set_title("Robot Trajectory")
+    ax.set_xlabel("X (px)")
+    ax.set_ylabel("Y (px)")
+    fig.tight_layout()
+    fig.savefig(out_path)
+    plt.close(fig)
+
+# Main execution
+if __name__ == "__main__":
+    WIDTH, HEIGHT = 800, 600
+    walls = create_walls(WIDTH, HEIGHT)
+    start_pos = Vector2(WIDTH * 0.1, HEIGHT * 0.1)
+    start_heading = 0.0
+    
+    # Run hill climber
+    best_genome, best_fitness, fitness_history = hill_climber(
+        WIDTH, HEIGHT, walls, 
+        generations=50,
+        eval_time=3000,
+        start_pos=start_pos,
+        start_heading=start_heading
+    )
+    
+    # Visualize best behavior
+    visualize_evolved_behavior(best_genome, WIDTH, HEIGHT, walls, 
+                              eval_time=3000, start_pos=start_pos, 
+                              start_heading=start_heading)
+    
