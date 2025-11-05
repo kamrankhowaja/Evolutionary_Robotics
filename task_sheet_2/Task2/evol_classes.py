@@ -5,7 +5,7 @@ from typing import List, Optional, Tuple, Dict, Set
 from pygame import Vector2
 import numpy as np
 import matplotlib.pyplot as plt
-
+import os
 
 class Wall:
     """Represents a wall segment for collision detection"""
@@ -120,7 +120,7 @@ class Robot(pygame.sprite.Sprite):
         self.v_left = 0.0
         self.v_right = 0.0
         self.max_speed = 3.0
-        self.rotation_speed = 0.05
+        self.rotation_speed = 0.03
         self.speed = 2.0
         
         # FSM state
@@ -147,7 +147,7 @@ class Robot(pygame.sprite.Sprite):
         ]
         
         # Safe distance threshold for FSM activation
-        self.safe_distance = 0.5 * self.rays[1].max_length
+        self.safe_distance = 0.6 * self.rays[1].max_length
         
         # Grid tracking for fitness
         self.visited_cells: Set[Tuple[int, int]] = set()
@@ -530,52 +530,55 @@ def evaluate_genome(genome: np.ndarray, width: int, height: int,
 
 
 def hill_climber(width: int, height: int, walls: List[Wall], 
-                generations: int = 100, eval_time: int = 1000,
-                start_pos: Vector2 = None, start_heading: float = 0.0):
-    """Hill climber evolution algorithm"""
+                 generations: int = 100, eval_time: int = 1000,
+                 start_pos: Vector2 = None, start_heading: float = 0.0,
+                 visualize_final: bool = True):
+    """Hill climber evolution algorithm; optionally visualize the final best genome once."""
     if start_pos is None:
         start_pos = Vector2(width * 0.1, height * 0.1)
-    
+
     # Initialize with random genome
     current_genome = random_genome()
     current_fitness, _ = evaluate_genome(current_genome, width, height, walls, 
-                                        eval_time, start_pos, start_heading)
-    
+                                         eval_time, start_pos, start_heading, visualize=False)
     print(f"Generation 0: Fitness = {current_fitness}")
     print(f"Initial genome: {current_genome}")
-    
+
     fitness_history = [current_fitness]
     best_genome = current_genome.copy()
     best_fitness = current_fitness
-    
+
     for gen in range(1, generations + 1):
-        # Mutate current genome
         candidate_genome = mutate_genome(current_genome)
-        
-        # Evaluate candidate
         candidate_fitness, _ = evaluate_genome(candidate_genome, width, height, 
-                                              walls, eval_time, start_pos, start_heading)
-        
-        # Hill climber: accept if better or equal
+                                               walls, eval_time, start_pos, start_heading, visualize=False)
+
         if candidate_fitness >= current_fitness:
             current_genome = candidate_genome
             current_fitness = candidate_fitness
             print(f"Generation {gen}: Fitness = {current_fitness} (ACCEPTED)")
         else:
             print(f"Generation {gen}: Fitness = {candidate_fitness} (rejected, keeping {current_fitness})")
-        
+
         fitness_history.append(current_fitness)
-        
-        # Track best ever
         if current_fitness > best_fitness:
             best_fitness = current_fitness
             best_genome = current_genome.copy()
-    
+
     print(f"\nEvolution complete!")
     print(f"Best fitness: {best_fitness}")
     print(f"Best genome: {best_genome}")
-    
-    return best_genome, best_fitness, fitness_history
+
+    # One (and only) visualization run if requested
+    best_robot = None
+    if visualize_final:
+        print("\nVisualizing best genome...")
+        vis_fitness, best_robot = evaluate_genome(best_genome, width, height, walls,
+                                                  eval_time, start_pos, start_heading, visualize=True)
+        print(f"Final fitness (visualized): {vis_fitness}")
+
+    return best_genome, best_fitness, fitness_history, best_robot
+
 
 
 def visualize_evolved_behavior(genome: np.ndarray, width: int, height: int,
@@ -623,24 +626,66 @@ def save_trajectory_png(robot: "Robot",
     fig.savefig(out_path)
     plt.close(fig)
 
-# Main execution
-if __name__ == "__main__":
-    WIDTH, HEIGHT = 800, 600
-    walls = create_walls(WIDTH, HEIGHT)
-    start_pos = Vector2(WIDTH * 0.1, HEIGHT * 0.1)
-    start_heading = 0.0
-    
-    # Run hill climber
-    best_genome, best_fitness, fitness_history = hill_climber(
-        WIDTH, HEIGHT, walls, 
-        generations=50,
-        eval_time=3000,
-        start_pos=start_pos,
-        start_heading=start_heading
-    )
-    
-    # Visualize best behavior
-    visualize_evolved_behavior(best_genome, WIDTH, HEIGHT, walls, 
-                              eval_time=3000, start_pos=start_pos, 
-                              start_heading=start_heading)
+
+def run_multiple_and_plot(n_runs: int,
+                          width: int, height: int,
+                          walls,
+                          generations: int,
+                          eval_time: int,
+                          start_pos: Vector2,
+                          start_heading: float,
+                          out_path: str = "./multi_run_trajectories.png") -> None:
+    """
+    Runs hill_climber n_runs times independently (headless), evaluates the best genome once
+    per run to collect its trajectory, and plots all trajectories on one matplotlib figure.
+    """
+    robots = []
+
+    for i in range(n_runs):
+        # Evolve headless (no extra visual run)
+        best_genome, best_fitness, _, _ = hill_climber(
+            width, height, walls,
+            generations=generations,
+            eval_time=eval_time,
+            start_pos=start_pos,
+            start_heading=start_heading,
+            visualize_final=False
+        )
+        # Evaluate the best genome once to get its trajectory (headless)
+        _, robot = evaluate_genome(
+            best_genome, width, height, walls,
+            eval_time, start_pos, start_heading, visualize=False
+        )
+        robots.append(robot)
+        print(f"Run {i+1}: best fitness = {best_fitness}")
+
+    # --- Plot all trajectories together ---
+    fig, ax = plt.subplots(figsize=(width/100, height/100), dpi=100)
+    ax.set_xlim(0, width)
+    ax.set_ylim(height, 0)  # invert Y to match pygame coordinates
+    ax.set_aspect('equal', adjustable='box')
+    ax.set_title("Multi-run Trajectories")
+    ax.set_xlabel("X (px)")
+    ax.set_ylabel("Y (px)")
+
+    # Draw walls
+    for w in walls:
+        ax.plot([w.starting_pt.x, w.ending_pt.x],
+                [w.starting_pt.y, w.ending_pt.y],
+                linewidth=2)
+
+    # Draw trajectories, each with a different color/label
+    for i, robot in enumerate(robots):
+        if len(robot.trajectory) > 1:
+            xs = [p.x for p in robot.trajectory]
+            ys = [p.y for p in robot.trajectory]
+            ax.plot(xs, ys, linewidth=2, label=f"Run {i+1}")
+            ax.scatter([robot.pos.x], [robot.pos.y], s=20)  # final position marker
+
+    ax.legend(loc="upper right")
+    fig.tight_layout()
+    fig.savefig(out_path)
+    plt.close(fig)
+    print(f"Saved combined plot to: {out_path}")
+
     
