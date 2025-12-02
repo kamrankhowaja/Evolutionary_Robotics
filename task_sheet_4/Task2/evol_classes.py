@@ -448,11 +448,14 @@ def mutate_genome(genome: np.ndarray, mutation_rate: float = 0.3) -> np.ndarray:
 
 def evaluate_genome(genome: np.ndarray, width: int, height: int, 
                     walls: List[Wall], eval_time: int = 1000,
-                    start_pos: Vector2 = None, start_heading: float = 0.0,
+                    start_pos: Vector2 = None, start_heading: float = None,
                     visualize: bool = False) -> Tuple[int, Robot]:
     """Evaluate a genome by running robot simulation"""
     if start_pos is None:
-        start_pos = Vector2(width * 0.1, height * 0.1)
+        # start_pos = Vector2(width * 0.1, height * 0.1) #for Fixed evals
+        start_pos = Vector2(random.uniform(0, width), random.uniform(0, height)) # for randomized evals
+    if start_heading is None:
+        start_heading = random.uniform(0, 2 * math.pi)
     
     pygame.init()
     clock = pygame.time.Clock()
@@ -786,7 +789,7 @@ def experiment_bias_weight_omega(n_runs_per_cfg: int,
     """
     os.makedirs(out_dir, exist_ok=True)
 
-    # [name, use_bias, init_scale, sensor_shift_vec, omega_scale]
+    # Creating Profiles [name, use_bias, init_scale, sensor_shift_vec, omega_scale]
     configs = [
         ("bias_on_init1_omega1",   True,  1.0, np.array([0.0, 0.0, 0.0]), 1.0),
         ("bias_off_init1_omega1",  False, 1.0, np.array([0.0, 0.0, 0.0]), 1.0),
@@ -862,3 +865,56 @@ def experiment_bias_weight_omega(n_runs_per_cfg: int,
             height,
             out_path=os.path.join(out_dir, f"traj_{cfg_name}.png")
         )
+
+def run_multiple_randomized_ea_and_plot_fitness(n_runs: int,
+                                                width: int,
+                                                height: int,
+                                                walls: List[Wall],
+                                                generations: int,
+                                                pop_size: int,
+                                                eval_time: int,
+                                                start_pos: Vector2,
+                                                start_heading: float,
+                                                out_path: str = "./randomized_fitness_runs.png") -> None:
+    """
+    Runs evolutionary_run n_runs times independently (headless), 
+    each with random starting positions and headings.
+    Then logs best and average fitness for each run and plots them.
+    """
+    all_best_hist = []
+    all_avg_hist = []
+
+    for r in range(n_runs):
+        print(f"\n=== Randomized EA run {r+1}/{n_runs} ===")
+        _, best_fit, best_hist, avg_hist = evolutionary_run(
+            width=width,
+            height=height,
+            walls=walls,
+            generations=generations,
+            pop_size=pop_size,
+            eval_time=eval_time,
+            start_pos=start_pos,
+            start_heading=start_heading, 
+        )
+        all_best_hist.append(best_hist)
+        all_avg_hist.append(avg_hist)
+
+        print(f"Run {r+1}: final best fitness = {best_fit}")
+
+    # --- Plot --- #
+    gens = np.arange(generations)
+
+    fig, ax = plt.subplots(figsize=(8, 5))
+
+    for i in range(n_runs):
+        ax.plot(gens, all_best_hist[i], alpha=0.6, label=f"Run {i+1} best")
+        ax.plot(gens, all_avg_hist[i], alpha=0.4, linestyle="--", label=f"Run {i+1} avg")
+
+    ax.set_xlabel("Generation")
+    ax.set_ylabel("Fitness (visited cells)")
+    ax.set_title("Best and average fitness per generation (randomized positions)")
+    ax.legend(fontsize=8)
+    fig.tight_layout()
+    fig.savefig(out_path, dpi=200)
+    plt.close(fig)
+    print(f"Saved randomized fitness plot to: {out_path}")
